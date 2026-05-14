@@ -123,16 +123,20 @@ def content_to_parts(content: Any, tool_name_by_id: dict[str, str]) -> list[dict
             name = block.get("name", "")
             if tool_id and name:
                 tool_name_by_id[tool_id] = name
-            parts.append({"functionCall": {"name": name, "args": block.get("input", {})}})
+            fc: dict[str, Any] = {"name": name, "args": block.get("input", {})}
+            if tool_id:
+                fc["id"] = tool_id
+            parts.append({"functionCall": fc})
         elif btype == "tool_result":
             tool_id = block.get("tool_use_id", "")
             name = tool_name_by_id.get(tool_id, "tool_result")
-            parts.append({
-                "functionResponse": {
-                    "name": name,
-                    "response": {"content": block_text(block)},
-                }
-            })
+            fr: dict[str, Any] = {
+                "name": name,
+                "response": {"content": block_text(block)},
+            }
+            if tool_id:
+                fr["id"] = tool_id
+            parts.append({"functionResponse": fr})
         else:
             parts.append({"text": json.dumps(block, ensure_ascii=False)})
     return parts or [{"text": " "}]

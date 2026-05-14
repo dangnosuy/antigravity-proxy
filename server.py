@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from typing import AsyncIterator
@@ -29,13 +30,31 @@ def sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+_MAX_RETRIES = 2
+_RETRY_429_WAIT = 2.0  # seconds to wait before retrying a 429
+
+
+def _error_type_for_status(status_code: int) -> str:
+    if status_code == 401:
+        return "authentication_error"
+    if status_code == 400:
+        return "invalid_request_error"
+    if status_code == 429:
+        return "rate_limit_error"
+    if status_code == 529:
+        return "overloaded_error"
+    if status_code == 404:
+        return "not_found_error"
+    return "api_error"
+
+
 def anthropic_error(status_code: int, message: str) -> HTTPException:
     return HTTPException(
         status_code=status_code,
         detail={
             "type": "error",
             "error": {
-                "type": "authentication_error" if status_code == 401 else "api_error",
+                "type": _error_type_for_status(status_code),
                 "message": message,
             },
         },
@@ -138,13 +157,25 @@ async def create_message(request: Request):
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    chunks = []
-    try:
-        async for chunk in client.stream_generate_content(model, ag_request):
-            chunks.append(chunk)
-    except AntigravityError as exc:
-        print(f"ERROR message model={model} stream={stream} upstream_status={exc.status_code} detail={exc.message[:300]}")
-        raise anthropic_error(exc.status_code, exc.message)
+    last_exc: AntigravityError | None = None
+    for attempt in range(_MAX_RETRIES + 1):
+        chunks = []
+        try:
+            async for chunk in client.stream_generate_content(model, ag_request):
+                chunks.append(chunk)
+            last_exc = None
+            break
+        except AntigravityError as exc:
+            last_exc = exc
+            if exc.status_code == 429 and attempt < _MAX_RETRIES:
+                wait = _RETRY_429_WAIT * (attempt + 1)
+                print(f"RETRY 429 model={model} attempt={attempt + 1} wait={wait}s")
+                await asyncio.sleep(wait)
+                continue
+            print(f"ERROR message model={model} stream={stream} upstream_status={exc.status_code} detail={exc.message[:300]}")
+            raise anthropic_error(exc.status_code, exc.message)
+    if last_exc is not None:
+        raise anthropic_error(last_exc.status_code, last_exc.message)
     agg = aggregate_chunks(chunks)
     print(
         f"MODEL model={model} requested={requested_model} stream=false "
@@ -173,6 +204,7 @@ async def stream_anthropic(model: str, ag_request: dict) -> AsyncIterator[str]:
     )
 
     text_index: int | None = None
+    thinking_index: int | None = None
     next_index = 0
     agg = AggregatedResponse()
     try:
@@ -181,7 +213,28 @@ async def stream_anthropic(model: str, ag_request: dict) -> AsyncIterator[str]:
             agg.input_tokens = max(agg.input_tokens, int(usage.get("promptTokenCount", 0) or 0))
             agg.output_tokens = max(agg.output_tokens, int(usage.get("candidatesTokenCount", 0) or 0))
             for part in extract_parts(chunk):
-                if "text" in part:
+                # Handle thinking blocks from upstream (thinking models)
+                if "thought" in part or part.get("_partType") == "thinking":
+                    thought_text = part.get("thought", "") or part.get("text", "")
+                    if thought_text:
+                        if thinking_index is None:
+                            thinking_index = next_index
+                            next_index += 1
+                            yield sse("content_block_start", {
+                                "type": "content_block_start",
+                                "index": thinking_index,
+                                "content_block": {"type": "thinking", "thinking": ""},
+                            })
+                        yield sse("content_block_delta", {
+                            "type": "content_block_delta",
+                            "index": thinking_index,
+                            "delta": {"type": "thinking_delta", "thinking": thought_text},
+                        })
+                elif "text" in part:
+                    # Close thinking block before starting text
+                    if thinking_index is not None:
+                        yield sse("content_block_stop", {"type": "content_block_stop", "index": thinking_index})
+                        thinking_index = None
                     if text_index is None:
                         text_index = next_index
                         next_index += 1
@@ -199,6 +252,10 @@ async def stream_anthropic(model: str, ag_request: dict) -> AsyncIterator[str]:
                         "delta": {"type": "text_delta", "text": text},
                     })
                 elif "functionCall" in part:
+                    # Close thinking block before tool use
+                    if thinking_index is not None:
+                        yield sse("content_block_stop", {"type": "content_block_stop", "index": thinking_index})
+                        thinking_index = None
                     fc = part["functionCall"]
                     tool_index = next_index
                     next_index += 1
@@ -231,15 +288,22 @@ async def stream_anthropic(model: str, ag_request: dict) -> AsyncIterator[str]:
                     yield sse("content_block_stop", {"type": "content_block_stop", "index": tool_index})
                 elif "_finishReason" in part:
                     reason = str(part["_finishReason"]).upper()
-                    agg.stop_reason = "max_tokens" if reason == "MAX_TOKENS" else "end_turn"
+                    agg.stop_reason = {
+                        "MAX_TOKENS": "max_tokens",
+                        "STOP": "end_turn",
+                        "SAFETY": "stop_sequence",
+                        "RECITATION": "stop_sequence",
+                    }.get(reason, "end_turn")
     except AntigravityError as exc:
         print(f"ERROR message model={model} stream=true upstream_status={exc.status_code} detail={exc.message[:300]}")
         yield sse("error", {
             "type": "error",
-            "error": {"type": "api_error", "message": exc.message},
+            "error": {"type": _error_type_for_status(exc.status_code), "message": exc.message},
         })
         return
 
+    if thinking_index is not None:
+        yield sse("content_block_stop", {"type": "content_block_stop", "index": thinking_index})
     if text_index is not None:
         yield sse("content_block_stop", {"type": "content_block_stop", "index": text_index})
     if agg.tool_uses:
