@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+
+# Local credentials, never share
+token.txt
+token_*.txt
+refresh_token.txt
+refresh_token_*.txt
+
+# Local captures/debug output
+captured_requests/
+captured_requests.json
+all_traffic.json
+flows.bin
+*.burp
