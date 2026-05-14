@@ -10,6 +10,50 @@ from . import config
 
 BETA_TOOL_FIELDS = {"strict", "eager_input_streaming", "defer_loading", "cache_control"}
 UNSUPPORTED_BUILTIN_PREFIXES = ("bash_", "text_editor_", "computer_")
+GEMINI_SCHEMA_KEYS = {
+    "type",
+    "format",
+    "description",
+    "nullable",
+    "enum",
+    "maxItems",
+    "minItems",
+    "properties",
+    "required",
+    "propertyOrdering",
+    "items",
+    "minimum",
+    "maximum",
+}
+JSON_SCHEMA_KEYS_TO_DROP = {
+    "$schema",
+    "$id",
+    "$defs",
+    "definitions",
+    "additionalProperties",
+    "patternProperties",
+    "unevaluatedProperties",
+    "dependencies",
+    "dependentRequired",
+    "dependentSchemas",
+    "allOf",
+    "anyOf",
+    "oneOf",
+    "not",
+    "if",
+    "then",
+    "else",
+    "examples",
+    "default",
+    "title",
+    "pattern",
+    "const",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "multipleOf",
+    "minLength",
+    "maxLength",
+}
 
 
 def resolve_model(model: str) -> str:
@@ -128,13 +172,67 @@ def sanitize_tools(tools: list[dict] | None) -> list[dict]:
     return [tool for tool in cleaned if tool.get("name")]
 
 
+def normalize_schema_type(value: Any) -> Any:
+    if isinstance(value, list):
+        non_null = [item for item in value if item != "null"]
+        if len(non_null) == 1:
+            return non_null[0]
+        if non_null:
+            return non_null[0]
+        return "string"
+    return value
+
+
+def sanitize_gemini_schema(schema: Any) -> dict:
+    """Convert Claude/JSON Schema input_schema into Gemini-compatible Schema.
+
+    Claude Code commonly sends full JSON Schema with fields such as `$schema`,
+    `additionalProperties`, and composition keywords. The Antigravity/Gemini
+    function declaration endpoint rejects those fields, so keep only the Schema
+    fields it accepts and recurse into properties/items.
+    """
+    if not isinstance(schema, dict):
+        return {"type": "object", "properties": {}}
+
+    out: dict[str, Any] = {}
+    schema_type = normalize_schema_type(schema.get("type", "object"))
+    if isinstance(schema_type, str):
+        out["type"] = schema_type
+
+    for key, value in schema.items():
+        if key in JSON_SCHEMA_KEYS_TO_DROP or key not in GEMINI_SCHEMA_KEYS:
+            continue
+        if key == "type":
+            out["type"] = normalize_schema_type(value)
+        elif key == "properties" and isinstance(value, dict):
+            out["properties"] = {
+                str(prop_name): sanitize_gemini_schema(prop_schema)
+                for prop_name, prop_schema in value.items()
+                if isinstance(prop_schema, dict)
+            }
+        elif key == "items":
+            out["items"] = sanitize_gemini_schema(value)
+        elif key == "required" and isinstance(value, list):
+            out["required"] = [str(item) for item in value]
+        elif key == "enum" and isinstance(value, list):
+            out["enum"] = value
+        elif key == "nullable":
+            out["nullable"] = bool(value)
+        else:
+            out[key] = value
+
+    if out.get("type") == "object":
+        out.setdefault("properties", {})
+    return out
+
+
 def tools_to_gemini(tools: list[dict] | None) -> list[dict]:
     declarations = []
     for tool in sanitize_tools(tools):
         declarations.append({
             "name": tool.get("name", ""),
             "description": tool.get("description", ""),
-            "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
+            "parameters": sanitize_gemini_schema(tool.get("input_schema", {"type": "object", "properties": {}})),
         })
     return [{"functionDeclarations": declarations}] if declarations else []
 
