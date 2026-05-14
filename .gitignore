@@ -7,6 +7,7 @@ token.txt
 token_*.txt
 refresh_token.txt
 refresh_token_*.txt
+oauth_client.json
 
 # Local captures/debug output
 captured_requests/

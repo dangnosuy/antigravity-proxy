@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import httpx
@@ -41,15 +42,25 @@ class TokenStore:
             if line.strip().startswith("1//")
         ]
 
+    def load_oauth_client(self) -> tuple[str, str]:
+        if not config.OAUTH_CLIENT_FILE.exists():
+            return "", ""
+        try:
+            data = json.loads(config.OAUTH_CLIENT_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return "", ""
+        return data.get("client_id", "") or "", data.get("client_secret", "") or ""
+
     async def refresh_access_token(self, refresh_token: str) -> str:
-        if not config.OAUTH_CLIENT_ID or not config.OAUTH_CLIENT_SECRET:
+        client_id, client_secret = self.load_oauth_client()
+        if not client_id or not client_secret:
             return ""
         async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.post(
                 config.OAUTH_TOKEN_URL,
                 data={
-                    "client_id": config.OAUTH_CLIENT_ID,
-                    "client_secret": config.OAUTH_CLIENT_SECRET,
+                    "client_id": client_id,
+                    "client_secret": client_secret,
                     "refresh_token": refresh_token,
                     "grant_type": "refresh_token",
                 },

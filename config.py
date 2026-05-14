@@ -18,11 +18,10 @@ OAUTH_TOKEN_URL = os.environ.get(
     "https://oauth2.googleapis.com/token",
 )
 
-OAUTH_CLIENT_ID = os.environ.get("AG_OAUTH_CLIENT_ID", "")
-OAUTH_CLIENT_SECRET = os.environ.get("AG_OAUTH_CLIENT_SECRET", "")
+OAUTH_CLIENT_FILE = PACKAGE_DIR / "oauth_client.json"
 
-TOKEN_FILE = Path(os.environ.get("AG_TOKEN_FILE", DEFAULT_TOKEN_DIR / "token.txt"))
-REFRESH_TOKEN_FILE = Path(os.environ.get("AG_REFRESH_TOKEN_FILE", DEFAULT_TOKEN_DIR / "refresh_token.txt"))
+TOKEN_FILE = DEFAULT_TOKEN_DIR / "token.txt"
+REFRESH_TOKEN_FILE = DEFAULT_TOKEN_DIR / "refresh_token.txt"
 
 DEFAULT_MODEL = os.environ.get("AG_DEFAULT_MODEL", "gemini-3-flash")
 DEFAULT_MAX_OUTPUT_TOKENS = int(os.environ.get("AG_MAX_OUTPUT_TOKENS", "8192"))

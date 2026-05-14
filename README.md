@@ -29,11 +29,17 @@ cd ag_proxy
 python3 extract_token.py --dry-run
 ```
 
-Write `token.txt` and `refresh_token.txt` inside the `ag_proxy` folder:
+Write local auth files inside the `ag_proxy` folder:
 
 ```bash
 python3 extract_token.py
 ```
+
+This creates:
+
+- `token.txt`
+- `refresh_token.txt`
+- `oauth_client.json` if the installed Antigravity app exposes OAuth client credentials
 
 By default the extractor reads:
 
@@ -45,6 +51,7 @@ To see all paths the tool checks:
 
 ```bash
 python3 extract_token.py --print-paths
+python3 extract_token.py --print-app-paths
 ```
 
 Custom locations:
@@ -60,15 +67,8 @@ python extract_token.py --db "$env:APPDATA\Antigravity\User\globalStorage\state.
 python extract_token.py
 ```
 
-The extractor only reads local Antigravity state. It does not send tokens
+The extractor only reads local Antigravity files. It does not send tokens
 anywhere. Refresh tokens are appended uniquely by default.
-
-The proxy can use `token.txt` directly. Automatic token refresh is disabled
-unless OAuth client credentials are provided through environment variables:
-
-```bash
-AG_OAUTH_CLIENT_ID=... AG_OAUTH_CLIENT_SECRET=... python3 run_proxy.py
-```
 
 ## Run Proxy
 
@@ -76,14 +76,6 @@ From inside the shared folder:
 
 ```bash
 cd ag_proxy
-PORT=5005 python3 run_proxy.py
-```
-
-If your token files are somewhere else:
-
-```bash
-export AG_TOKEN_FILE=/path/to/token.txt
-export AG_REFRESH_TOKEN_FILE=/path/to/refresh_token.txt
 PORT=5005 python3 run_proxy.py
 ```
 

@@ -64,6 +64,8 @@ AUTH_STATUS_KEY = "antigravityAuthStatus"
 
 REFRESH_RE = re.compile(r"1//[A-Za-z0-9_+/=-]{20,}")
 ACCESS_RE = re.compile(r"ya29\.[A-Za-z0-9_.-]{50,}")
+CLIENT_ID_RE = re.compile(r"[0-9]+-[A-Za-z0-9_-]+\.apps\.googleusercontent\.com")
+CLIENT_SECRET_RE = re.compile(r"GOCSPX-[A-Za-z0-9_-]+")
 BASE64_CHUNK_RE = re.compile(r"[A-Za-z0-9+/=_-]{40,}")
 
 
@@ -71,6 +73,8 @@ BASE64_CHUNK_RE = re.compile(r"[A-Za-z0-9+/=_-]{40,}")
 class ExtractedTokens:
     access_token: str = ""
     refresh_token: str = ""
+    oauth_client_id: str = ""
+    oauth_client_secret: str = ""
     email: str = ""
     name: str = ""
     source_db: str = ""
@@ -79,6 +83,8 @@ class ExtractedTokens:
         return {
             "access_token": mask_secret(self.access_token),
             "refresh_token": mask_secret(self.refresh_token),
+            "oauth_client_id": mask_secret(self.oauth_client_id),
+            "oauth_client_secret": mask_secret(self.oauth_client_secret),
             "email": self.email,
             "name": self.name,
             "source_db": self.source_db,
@@ -155,6 +161,70 @@ def extract_from_auth_status(raw_json: str) -> tuple[str, str, str]:
     return data.get("apiKey", "") or "", data.get("email", "") or "", data.get("name", "") or ""
 
 
+def antigravity_app_file_candidates() -> list[Path]:
+    home = Path.home()
+    system = platform.system().lower()
+    candidates: list[Path] = []
+
+    if system == "windows":
+        for env_name in ("LOCALAPPDATA", "APPDATA", "ProgramFiles", "ProgramFiles(x86)"):
+            base = os.environ.get(env_name)
+            if not base:
+                continue
+            root = Path(base)
+            candidates.extend([
+                root / "Programs" / "Antigravity" / "resources" / "app" / "out" / "main.js",
+                root / "Antigravity" / "resources" / "app" / "out" / "main.js",
+                root / "Google" / "Antigravity" / "resources" / "app" / "out" / "main.js",
+            ])
+        candidates.extend([
+            home / "AppData" / "Local" / "Programs" / "Antigravity" / "resources" / "app" / "out" / "main.js",
+            home / "AppData" / "Local" / "Antigravity" / "resources" / "app" / "out" / "main.js",
+        ])
+    elif system == "darwin":
+        candidates.extend([
+            Path("/Applications/Antigravity.app/Contents/Resources/app/out/main.js"),
+            home / "Applications" / "Antigravity.app" / "Contents" / "Resources" / "app" / "out" / "main.js",
+        ])
+    else:
+        candidates.extend([
+            Path("/usr/share/antigravity/resources/app/out/main.js"),
+            Path("/opt/Antigravity/resources/app/out/main.js"),
+            Path("/opt/antigravity/resources/app/out/main.js"),
+        ])
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path)
+        if key not in seen:
+            unique.append(path)
+            seen.add(key)
+    return unique
+
+
+def extract_oauth_client_from_text(text: str) -> tuple[str, str]:
+    ids = CLIENT_ID_RE.findall(text)
+    secrets = CLIENT_SECRET_RE.findall(text)
+    if not ids or not secrets:
+        return "", ""
+    return ids[0], secrets[0]
+
+
+def discover_oauth_client() -> tuple[str, str, str]:
+    for path in antigravity_app_file_candidates():
+        if not path.exists():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        client_id, client_secret = extract_oauth_client_from_text(text)
+        if client_id and client_secret:
+            return client_id, client_secret, str(path)
+    return "", "", ""
+
+
 def extract_tokens(db_path: Path = DEFAULT_DB_PATH) -> ExtractedTokens:
     if not db_path.exists():
         raise FileNotFoundError(f"Antigravity database not found: {db_path}")
@@ -164,10 +234,13 @@ def extract_tokens(db_path: Path = DEFAULT_DB_PATH) -> ExtractedTokens:
 
     oauth_access, refresh_token = extract_from_oauth_token(oauth_value)
     status_access, email, name = extract_from_auth_status(auth_status_value)
+    client_id, client_secret, _client_source = discover_oauth_client()
 
     return ExtractedTokens(
         access_token=status_access or oauth_access,
         refresh_token=refresh_token,
+        oauth_client_id=client_id,
+        oauth_client_secret=client_secret,
         email=email,
         name=name,
         source_db=str(db_path),
@@ -195,6 +268,21 @@ def write_token_files(tokens: ExtractedTokens, out_dir: Path, append_refresh: bo
         else:
             refresh_path.write_text(tokens.refresh_token.strip() + "\n", encoding="utf-8")
 
+    if tokens.oauth_client_id and tokens.oauth_client_secret:
+        oauth_path = out_dir / "oauth_client.json"
+        oauth_path.write_text(
+            json.dumps(
+                {
+                    "client_id": tokens.oauth_client_id,
+                    "client_secret": tokens.oauth_client_secret,
+                    "token_uri": config.OAUTH_TOKEN_URL,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
     return token_path, refresh_path
 
 
@@ -208,6 +296,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--overwrite-refresh", action="store_true", help="Overwrite refresh_token.txt instead of appending unique token")
     parser.add_argument("--json", action="store_true", help="Print redacted JSON result")
     parser.add_argument("--print-paths", action="store_true", help="Print auto-detected database candidate paths")
+    parser.add_argument("--print-app-paths", action="store_true", help="Print Antigravity app files checked for OAuth client credentials")
     return parser
 
 
@@ -215,6 +304,11 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.print_paths:
         for path in default_db_candidates():
+            marker = "exists" if path.exists() else "missing"
+            print(f"{marker}: {path}")
+        return 0
+    if args.print_app_paths:
+        for path in antigravity_app_file_candidates():
             marker = "exists" if path.exists() else "missing"
             print(f"{marker}: {path}")
         return 0
@@ -239,6 +333,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Account: {tokens.name or '?'} <{tokens.email or '?'}>")
         print(f"Access token:  {mask_secret(tokens.access_token) or 'not found'}")
         print(f"Refresh token: {mask_secret(tokens.refresh_token) or 'not found'}")
+        print(f"OAuth client:  {'found' if tokens.oauth_client_id and tokens.oauth_client_secret else 'not found'}")
 
     if args.dry_run:
         return 0
@@ -254,6 +349,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"Saved access token:  {token_path}")
     print(f"Saved refresh token: {refresh_path}")
+    if tokens.oauth_client_id and tokens.oauth_client_secret:
+        print(f"Saved OAuth client:  {args.out_dir / 'oauth_client.json'}")
+    else:
+        print("warning: OAuth client not found; auto-refresh will be unavailable", file=sys.stderr)
     return 0
 
 
