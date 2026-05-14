@@ -6,7 +6,7 @@ from pathlib import Path
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = PACKAGE_DIR.parent
-DEFAULT_TOKEN_DIR = ROOT_DIR
+DEFAULT_TOKEN_DIR = PACKAGE_DIR
 
 ANTIGRAVITY_BASE_URL = os.environ.get(
     "AG_BASE_URL",

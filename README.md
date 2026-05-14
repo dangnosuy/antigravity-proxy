@@ -29,7 +29,7 @@ cd ag_proxy
 python3 extract_token.py --dry-run
 ```
 
-Write `token.txt` and `refresh_token.txt` next to the shared `ag_proxy` folder:
+Write `token.txt` and `refresh_token.txt` inside the `ag_proxy` folder:
 
 ```bash
 python3 extract_token.py
@@ -121,7 +121,8 @@ claude
 ```
 
 The incoming Anthropic token is ignored. The proxy uses `token.txt` and
-`refresh_token.txt`.
+`refresh_token.txt` from this `ag_proxy` folder unless `AG_TOKEN_FILE` or
+`AG_REFRESH_TOKEN_FILE` is set.
 
 ## API Endpoints
 
